@@ -1,81 +1,96 @@
 #!/usr/bin/env python3
-"""Redis Data storage module"""
-
-import uuid
+""" Redis client module
+"""
 import redis
+from uuid import uuid4
 from functools import wraps
-from typing import Any, Callable, Union
+from typing import Any, Callable, Optional, Union
 
 
 def count_calls(method: Callable) -> Callable:
-    """Decorator to track the number of calls made to a method."""
+    """ Decorator for Cache class methods to track call count
+    """
     @wraps(method)
-    def track_calls(self, *args, **kwargs) -> Any:
-        """Increment call count and invoke the method."""
-        if isinstance(self.cache, redis.Redis):
-            self.cache.incr(method.__qualname__)
+    def wrapper(self: Any, *args, **kwargs) -> str:
+        """ Wraps called method and adds its call count redis before execution
+        """
+        self._redis.incr(method.__qualname__)
         return method(self, *args, **kwargs)
-    return track_calls
+    return wrapper
 
 
 def call_history(method: Callable) -> Callable:
-    """Decorator to track the call history of a method."""
+    """ Decorator for Cache class method to track args
+    """
     @wraps(method)
-    def track_history(self, *args, **kwargs) -> Any:
-        """Store input/output details and invoke the method."""
-        in_key = f"{method.__qualname__}:inputs"
-        out_key = f"{method.__qualname__}:outputs"
-        if isinstance(self.cache, redis.Redis):
-            self.cache.rpush(in_key, str(args))
-        output = method(self, *args, **kwargs)
-        if isinstance(self.cache, redis.Redis):
-            self.cache.rpush(out_key, output)
+    def wrapper(self: Any, *args) -> str:
+        """ Wraps called method and tracks its passed argument by storing
+            them to redis
+        """
+        self._redis.rpush(f'{method.__qualname__}:inputs', str(args))
+        output = method(self, *args)
+        self._redis.rpush(f'{method.__qualname__}:outputs', output)
         return output
-    return track_history
+    return wrapper
 
 
 def replay(fn: Callable) -> None:
-    """Replay call history of a method."""
-    if not (fn and hasattr(fn, "__self__")):
-        return
-    redis_store = getattr(fn.__self__, "cache", None)
-    if not isinstance(redis_store, redis.Redis):
-        return
-    method_name = fn.__qualname__
-    in_key = f"{method_name}:inputs"
-    out_key = f"{method_name}:outputs"
-    method_calls = int(redis_store.get(method_name) or 0)
-    print(f"{method_name} was called {method_calls} times:")
-    method_inputs = redis_store.lrange(in_key, 0, -1)
-    method_outputs = redis_store.lrange(out_key, 0, -1)
-    for method_input, method_output in zip(method_inputs, method_outputs):
-        print(f"{method_name}(*{method_input.decode('utf-8')}) -> {method_output}")
+    """ Check redis for how many times a function was called and display:
+            - How many times it was called
+            - Function args and output for each call
+    """
+    client = redis.Redis()
+    calls = client.get(fn.__qualname__).decode('utf-8')
+    inputs = [input.decode('utf-8') for input in
+              client.lrange(f'{fn.__qualname__}:inputs', 0, -1)]
+    outputs = [output.decode('utf-8') for output in
+               client.lrange(f'{fn.__qualname__}:outputs', 0, -1)]
+    print(f'{fn.__qualname__} was called {calls} times:')
+    for input, output in zip(inputs, outputs):
+        print(f'{fn.__qualname__}(*{input}) -> {output}')
 
 
 class Cache:
-    """Represents an object for storing data in a Redis data storage."""
+    """ Caching class
+    """
     def __init__(self) -> None:
-        """Initialize a Cache instance."""
-        self.cache = redis.Redis()
-        self.cache.flushdb(True)
+        """ Initialize new cache object
+        """
+        self._redis = redis.Redis()
+        self._redis.flushdb()
 
     @call_history
     @count_calls
-    def store(self, data: Union[str, bytes, int, float]) -> str:
-        """Store a value in a Redis data storage and return the key."""
-        data_key = str(uuid.uuid4())
-        self.cache.set(data_key, data)
-        return data_key
+    def store(self, data: Union[str, bytes,  int,  float]) -> str:
+        """ Stores data in redis with randomly generated key
+        """
+        key = str(uuid4())
+        client = self._redis
+        client.set(key, data)
+        return key
 
-    def get(self, key: str, fn: Callable = None) -> Union[str, bytes, int, float]:
-        """Retrieve a value from a Redis data storage."""
-        data = self.cache.get(key)
-        return fn(data) if fn else data
+    def get(self, key: str, fn: Optional[Callable] = None) -> Any:
+        """ Gets key's value from redis and converts
+            result byte  into correct data type
+        """
+        client = self._redis
+        value = client.get(key)
+        if not value:
+            return
+        if fn is int:
+            return self.get_int(value)
+        if fn is str:
+            return self.get_str(value)
+        if callable(fn):
+            return fn(value)
+        return value
 
-    def get_str(self, key: str) -> str:
-        """Retrieve a string value from a Redis data storage."""
-        return self.get(key, lambda x: x.decode("utf-8"))
+    def get_str(self, data: bytes) -> str:
+        """ Converts bytes to string
+        """
+        return data.decode('utf-8')
 
-    def get_int(self, key: str) -> int:
-        """Retrieve an integer value from a Redis data storage."""
-        return self.get(key, int)
+    def get_int(self, data: bytes) -> int:
+        """ Converts bytes to integers
+        """
+        return int(data)
