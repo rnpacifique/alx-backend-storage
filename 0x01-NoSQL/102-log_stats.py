@@ -1,63 +1,42 @@
 #!/usr/bin/env python3
 """
-Script to provide stats about Nginx logs stored in MongoDB
+Log stats
 """
-
-
 from pymongo import MongoClient
-from collections import Counter
 
 
-def count_logs(mongo_collection):
-    """
-    Count logs in collection
-    """
-    total_logs = mongo_collection.count_documents({})
-    print("{} logs".format(total_logs))
-
-
-def count_methods(mongo_collection):
-    """
-    Count methods
-    """
-    methods = ["GET", "POST", "PUT", "PATCH", "DELETE"]
-    for method in methods:
-        count = mongo_collection.count_documents({"method": method})
-        print("method {}: {}".format(method, count))
-
-
-def status_check(mongo_collection):
-    """
-    Count logs with method=GET and path=/status
-    """
-    count = mongo_collection.count_documents({"method": "GET", "path": "/status"})
-    print("{} status check".format(count))
-
-
-def top_ips(mongo_collection):
-    """
-    Display top 10 most present IPs
-    """
-    ip_counts = Counter(log['ip'] for log in mongo_collection.find())
-    sorted_ip_counts = sorted(ip_counts.items(), key=lambda x: x[1], reverse=True)[:10]
-    for ip, count in sorted_ip_counts:
-        print("{}: {}".format(ip, count))
-
-
-def main():
-    """
-    Main function
+def log_stats():
+    """ log_stats.
     """
     client = MongoClient('mongodb://127.0.0.1:27017')
     logs_collection = client.logs.nginx
-
-    count_logs(logs_collection)
+    total = logs_collection.count_documents({})
+    get = logs_collection.count_documents({"method": "GET"})
+    post = logs_collection.count_documents({"method": "POST"})
+    put = logs_collection.count_documents({"method": "PUT"})
+    patch = logs_collection.count_documents({"method": "PATCH"})
+    delete = logs_collection.count_documents({"method": "DELETE"})
+    path = logs_collection.count_documents(
+        {"method": "GET", "path": "/status"})
+    print(f"{total} logs")
     print("Methods:")
-    count_methods(logs_collection)
-    status_check(logs_collection)
+    print(f"\tmethod GET: {get}")
+    print(f"\tmethod POST: {post}")
+    print(f"\tmethod PUT: {put}")
+    print(f"\tmethod PATCH: {patch}")
+    print(f"\tmethod DELETE: {delete}")
+    print(f"{path} status check")
     print("IPs:")
-    top_ips(logs_collection)
+    sorted_ips = logs_collection.aggregate(
+        [{"$group": {"_id": "$ip", "count": {"$sum": 1}}},
+         {"$sort": {"count": -1}}])
+    i = 0
+    for s in sorted_ips:
+        if i == 10:
+            break
+        print(f"\t{s.get('_id')}: {s.get('count')}")
+        i += 1
 
 
 if __name__ == "__main__":
-    main()
+    log_stats()
